@@ -1,71 +1,78 @@
 #!/usr/bin/env python3
+""" Module of Session in Database
 """
-Definition of class SessionAuth
-"""
-import base64
-from uuid import uuid4
-from typing import TypeVar
-
-from .auth import Auth
-from models.user import User
+from api.v1.auth.session_exp_auth import SessionExpAuth
+from datetime import datetime, timedelta
+from models.user_session import UserSession
 
 
-class SessionAuth(Auth):
-    """ Implement Session Authorization protocol methods
-    """
-    user_id_by_session_id = {}
+class SessionDBAuth(SessionExpAuth):
+    """Session in database Class"""
 
-    def create_session(self, user_id: str = None) -> str:
-        """
-        Creates a Session ID for a user with id user_id
-        Args:
-            user_id (str): user's user id
-        Return:
-            None is user_id is None or not a string
-            Session ID in string format
-        """
-        if user_id is None or not isinstance(user_id, str):
+    def create_session(self, user_id=None):
+        """Creation session database"""
+        session_id = super().create_session(user_id)
+
+        if session_id is None:
             return None
-        id = uuid4()
-        self.user_id_by_session_id[str(id)] = user_id
-        return str(id)
 
-    def user_id_for_session_id(self, session_id: str = None) -> str:
-        """
-        Returns a user ID based on a session ID
-        Args:
-            session_id (str): session ID
-        Return:
-            user id or None if session_id is None or not a string
-        """
-        if session_id is None or not isinstance(session_id, str):
+        kwargs = {'user_id': user_id, 'session_id': session_id}
+        user_session = UserSession(**kwargs)
+        user_session.save()
+        UserSession.save_to_file()
+
+        return session_id
+
+    def user_id_for_session_id(self, session_id=None):
+        """User ID for Session ID Database"""
+        if session_id is None:
             return None
-        return self.user_id_by_session_id.get(session_id)
 
-    def current_user(self, request=None):
-        """
-        Return a user instance based on a cookie value
-        Args:
-            request : request object containing cookie
-        Return:
-            User instance
-        """
-        session_cookie = self.session_cookie(request)
-        user_id = self.user_id_for_session_id(session_cookie)
-        user = User.get(user_id)
-        return user
+        UserSession.load_from_file()
+        user_session = UserSession.search({
+            'session_id': session_id
+        })
+
+        if not user_session:
+            return None
+
+        user_session = user_session[0]
+
+        expired_time = user_session.created_at + \
+            timedelta(seconds=self.session_duration)
+
+        if expired_time < datetime.utcnow():
+            return None
+
+        return user_session.user_id
 
     def destroy_session(self, request=None):
-        """
-        Deletes a user session
-        """
+        """Remove Session from Database"""
         if request is None:
             return False
-        session_cookie = self.session_cookie(request)
-        if session_cookie is None:
+
+        session_id = self.session_cookie(request)
+        if session_id is None:
             return False
-        user_id = self.user_id_for_session_id(session_cookie)
-        if user_id is None:
+
+        user_id = self.user_id_for_session_id(session_id)
+
+        if not user_id:
             return False
-        del self.user_id_by_session_id[session_cookie]
+
+        user_session = UserSession.search({
+            'session_id': session_id
+        })
+
+        if not user_session:
+            return False
+
+        user_session = user_session[0]
+
+        try:
+            user_session.remove()
+            UserSession.save_to_file()
+        except Exception:
+            return False
+
         return True
